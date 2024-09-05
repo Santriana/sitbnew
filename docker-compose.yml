@@ -1,0 +1,68 @@
+version: "3.7"
+
+services:
+  database:
+    image: postgres:15.1-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=root
+      - POSTGRES_DB=usaidtb
+
+  redis:
+    image: redis:alpine
+    restart: always
+    volumes:
+      - redis_data:/data
+
+  site:
+    build: .
+    volumes:
+      - static_volume:/code/static
+      - media_volume:/code/media
+    env_file:
+      - .env
+    expose:
+      - 8000
+    depends_on:
+      - database
+      - redis
+
+  celery_worker:
+    build: .
+    entrypoint: [ "sh", "celery.sh" ]
+    env_file:
+      - .env
+    depends_on:
+      - database
+      - redis
+
+  celery_beat:
+    build: .
+    entrypoint: [ "sh", "celery_beat.sh" ]
+    env_file:
+      - .env
+    depends_on:
+      - database
+      - redis
+
+  nginx:
+    image: nginx:1.19.0-alpine
+    restart: unless-stopped
+    volumes:
+      - ./data/nginx/conf.d:/etc/nginx/conf.d
+      - static_volume:/code/static
+      - media_volume:/code/media
+    command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
+    ports:
+      - "80:80"
+    depends_on:
+      - site
+
+volumes:
+  postgres_data:
+  redis_data:
+  static_volume:
+  media_volume:

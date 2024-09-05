@@ -1,0 +1,142 @@
+stages:
+  - analyze
+  - build
+  - deploy
+  - zap
+
+variables:
+  IMAGE_REPOSITORY: ${CI_APPLICATION_REPOSITORY:-$CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG}
+  IMAGE_TAG: ${CI_APPLICATION_TAG:-$CI_COMMIT_SHA}
+  DB_PASSWORD: "P1np1np1N"
+  SECRET_NAME: "gitlab-registry-${CI_PROJECT_PATH_SLUG}"
+  BROKER_URL: 'redis://redis:6379/0'
+  SECRET_KEY: "django-insecure-wj!-0ovi!#&gj^t75s7)3^-m*639s756_!_pdjbby!_nax4$x^"
+  DEBUG: "1"
+  KUBE_CONTEXT: ${CI_PROJECT_PATH}:${CI_COMMIT_REF_SLUG}
+  K8S_PROXY_URL: https://git.erasysconsulting.com/-/kubernetes-agent/k8s-proxy/
+  AGENT_ID: 8
+
+sonarqube-check:
+  stage: analyze
+  image:
+    name: sonarsource/sonar-scanner-cli:latest
+    entrypoint: [""]
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"  # Defines the location of the analysis task cache
+    GIT_DEPTH: "0"  # Tells git to fetch all the branches of the project, required by the analysis task
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+      - .scannerwork
+  script:
+    - sonar-scanner
+  allow_failure: false
+  only:
+    - development
+
+deploy_preview:
+  stage: deploy
+  image: dtzar/helm-kubectl:3.2.4
+  tags:
+    - kubernetes
+  environment:
+    name: review/$CI_BUILD_REF_NAME
+    url: https://${CI_PROJECT_ID}-${CI_ENVIRONMENT_SLUG}.preview.erasysconsulting.com
+    on_stop: stop_preview
+    auto_stop_in: 1 week
+  variables:
+    DB_URL: "postgres://postgres:${DB_PASSWORD}@${CI_PROJECT_PATH_SLUG}-${CI_COMMIT_REF_SLUG}-postgresql:5432/${CI_PROJECT_PATH_SLUG}"
+    CACHE_URL: "rediscache://${CI_PROJECT_PATH_SLUG}-${CI_COMMIT_REF_SLUG}-redis-master:6379:0?client_class=django_redis.client.DefaultClient"
+    BROKER_URL: "redis://${CI_PROJECT_PATH_SLUG}-${CI_COMMIT_REF_SLUG}-redis-master:6379/0"
+  before_script:
+    - kubectl config set-credentials agent:$AGENT_ID --token="ci:${AGENT_ID}:${CI_JOB_TOKEN}"
+    - kubectl config set-cluster gitlab --server="${K8S_PROXY_URL}"
+    - kubectl config set-context "$KUBE_CONTEXT" --cluster=gitlab --user="agent:${AGENT_ID}"
+  script:
+    - kubectl config get-contexts
+    - kubectl config use-context ${KUBE_CONTEXT}
+    - kubectl create secret -n "$KUBE_NAMESPACE"
+      docker-registry "${SECRET_NAME}"
+      --docker-server="$CI_REGISTRY"
+      --docker-username="${CI_DEPLOY_USER:-$CI_REGISTRY_USER}"
+      --docker-password="${CI_DEPLOY_PASSWORD:-$CI_REGISTRY_PASSWORD}"
+      --docker-email="$GITLAB_USER_EMAIL"
+      -o yaml --dry-run | kubectl replace -n "$KUBE_NAMESPACE" --force -f - # create secret to pull from registry
+    - helm repo add bitnami https://charts.bitnami.com/bitnami # postgresql
+    - helm dependency update ./django-deploy-chart
+    - helm upgrade
+      --install
+      --set application.database_url="${DB_URL}"
+      --set image.repository="${CI_APPLICATION_REPOSITORY:-$CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG}"
+      --set-string image.tag="${CI_APPLICATION_TAG:-$CI_COMMIT_SHA}"
+      --set service.url=https://${CI_PROJECT_ID}-${CI_ENVIRONMENT_SLUG}.preview.erasysconsulting.com
+      --set imagePullSecrets=${SECRET_NAME}
+      --set global.postgresql.auth.postgresPassword="${DB_PASSWORD}"
+      --set global.postgresql.auth.database="${CI_PROJECT_PATH_SLUG}"
+      --set gitlab.app=$CI_PROJECT_PATH_SLUG
+      --set gitlab.env=$CI_ENVIRONMENT_SLUG
+      --set adminer.enabled=true
+      --set adminer.ingress.enabled=true
+      --set adminer.ingress.hosts[0]="${CI_ENVIRONMENT_SLUG}.preview.erasysconsulting.com"
+      --set adminer.ingress.annotations."nginx\.ingress\.kubernetes\.io/rewrite-target"="/adminer"
+      --set adminer.ingress.path="/adminer"
+      --set adminer.config.externalserver="${CI_PROJECT_PATH_SLUG}-${CI_COMMIT_REF_SLUG}-postgresql"
+      --set application.secret_key="${SECRET_KEY}"
+      --set application.debug="${DEBUG}"
+      --set web.requests="500m"
+      --set web.limits="1000m"
+      --set web.replicas="1"
+      --set redis.architecture="standalone"
+      --set redis.cluster.enabled=false
+      --set redis.usePassword=false
+      --set application.broker_url="${BROKER_URL}"
+      --wait
+      ${CI_PROJECT_PATH_SLUG}-${CI_COMMIT_REF_SLUG}
+      ./django-deploy-chart
+    - echo $CI_ENVIRONMENT_URL > environment_url.txt
+  artifacts:
+    paths:
+      - environment_url.txt
+  only:
+    - development
+
+stop_preview:
+  stage: deploy
+  variables:
+    GIT_STRATEGY: none
+  image: dtzar/helm-kubectl:3.2.4
+  tags:
+    - kubernetes
+  before_script:
+    - kubectl config set-credentials agent:$AGENT_ID --token="ci:${AGENT_ID}:${CI_JOB_TOKEN}"
+    - kubectl config set-cluster gitlab --server="${K8S_PROXY_URL}"
+    - kubectl config set-context "$KUBE_CONTEXT" --cluster=gitlab --user="agent:${AGENT_ID}"
+    - kubectl config use-context "$KUBE_CONTEXT"
+  script:
+    - helm uninstall ${CI_PROJECT_PATH_SLUG}-${CI_COMMIT_REF_SLUG}
+  when: manual
+  environment:
+    name: review/$CI_BUILD_REF_NAME
+    action: stop
+  only:
+    - development
+
+zap:
+  stage: zap
+  image: owasp/zap2docker-weekly
+  before_script:
+    - mkdir -p /zap/wrk
+  script:
+    - zap-api-scan.py -t ${OPEN_API_URL} -f openapi -r zap-report.html -I -z "-config formhandler.fields.field\\(0\\).fieldId=email -config formhandler.fields.field\\(0\\).value=${OPEN_API_EMAIL} -config formhandler.fields.field\\(0\\).enabled=true -config formhandler.fields.field\\(1\\).fieldId=password -config formhandler.fields.field\\(1\\).value=${OPEN_API_PASSWORD} -config formhandler.fields.field\\(1\\).enabled=true"
+    - cp /zap/wrk/zap-report.html zap-report.html
+  when: manual
+  artifacts:
+    paths: [zap-report.html]
+    expire_in: 1 weeks
+  allow_failure: true
+  only:
+    - development
+
+include:
+  - template: Jobs/Build.gitlab-ci.yml  # https://gitlab.com/gitlab-org/gitlab-foss/blob/master/lib/gitlab/ci/templates/Jobs/Build.gitlab-ci.yml

@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ template "trackableappname" . }}
+  labels:
+    app: {{ template "appname" . }}
+    track: "{{ .Values.application.track }}"
+    tier: "{{ .Values.application.tier }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+  annotations:
+    {{ if .Values.gitlab.app }}app.gitlab.com/app: {{ .Values.gitlab.app | quote }}{{ end }}
+    {{ if .Values.gitlab.env }}app.gitlab.com/env: {{ .Values.gitlab.env | quote }}{{ end }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: {{ template "appname" . }}
+      track: "{{ .Values.application.track }}"
+      tier: "{{ .Values.application.tier }}"
+      release: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ template "appname" . }}
+        track: "{{ .Values.application.track }}"
+        tier: "{{ .Values.application.tier }}"
+        release: {{ .Release.Name }}
+      annotations:
+        {{ if .Values.gitlab.app }}app.gitlab.com/app: {{ .Values.gitlab.app | quote }}{{ end }}
+        {{ if .Values.gitlab.env }}app.gitlab.com/env: {{ .Values.gitlab.env | quote }}{{ end }}
+    spec:
+      initContainers:
+        - name: check-db-ready
+          image: postgres:11.8-alpine
+          command: ['sh', '-c', 'until pg_isready -h {{ template "dbhostname" .Values.application.database_url }} -p {{ default 5432 .Values.global.postgresql.servicePort }}; do echo waiting for database; sleep 2; done;']
+      containers:
+      - image: {{ template "imagename" . }}
+        imagePullPolicy: Always
+        name: {{ .Chart.Name }}
+        env:
+          - name: DATABASE_URL
+            value: {{ .Values.application.database_url | quote }}
+          - name: CELERY_BROKER_URL
+            value: {{ .Values.application.broker_url | quote }}
+          - name: CELERY_RESULT_BACKEND
+            value: {{ .Values.application.broker_url | quote }}
+          - name: DEBUG
+            value: {{ .Values.application.debug | quote }}
+        resources:
+          requests:
+            cpu: "100m"
+          limits:
+            cpu: "200m"
+        ports:
+          - containerPort: 8000
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecrets }}
+      {{- end }}

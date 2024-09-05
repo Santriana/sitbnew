@@ -1,0 +1,99 @@
+version: "3.7"
+
+services:
+  database:
+    image: postgres:15-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    container_name: usaid-tb-backend-db
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=root
+      - POSTGRES_DB=usaidtb
+    networks:
+      - usaid-tb-backend-networks
+
+  redis:
+    image: redis:alpine
+    container_name: usaid-tb-backend-redis
+    restart: always
+    volumes:
+      - redis_data:/data
+    networks:
+      - usaid-tb-backend-networks
+
+  site:
+    build: .
+    restart: unless-stopped
+    container_name: usaid-tb-backend-site
+    volumes:
+      - .:/code/
+      - static_volume:/code/static
+      - media_volume:/code/media
+      - files_volume:/code/files
+    env_file:
+      - .env.example
+    ports:
+      - 8000:8000
+    depends_on:
+      - database
+      - redis
+    networks:
+      - usaid-tb-backend-networks
+
+  adminer:
+    image: adminer
+    restart: always
+    container_name: usaid-tb-backend-adminer
+    ports:
+      - 8080:8080
+    depends_on:
+      - database
+    networks:
+      - usaid-tb-backend-networks
+
+  celery_worker:
+    build: .
+    restart: unless-stopped
+    entrypoint: [ "sh", "celery.sh" ]
+    volumes:
+      - .:/code/
+      - static_volume:/code/static
+      - media_volume:/code/media
+      - files_volume:/code/files
+    env_file:
+      - .env.example
+    depends_on:
+      - database
+      - redis
+    networks:
+      - usaid-tb-backend-networks
+
+  celery_beat:
+    build: .
+    restart: unless-stopped
+    entrypoint: [ "sh", "celery_beat.sh" ]
+    volumes:
+      - .:/code/
+      - static_volume:/code/static
+      - media_volume:/code/media
+      - files_volume:/code/files
+    env_file:
+      - .env.example
+    depends_on:
+      - database
+      - redis
+    networks:
+      - usaid-tb-backend-networks
+
+networks:
+  usaid-tb-backend-networks:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  static_volume:
+  media_volume:
+  files_volume:
