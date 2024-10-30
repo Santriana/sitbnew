@@ -1,0 +1,21 @@
+# Default ignore
+*.pyc
+*.DS_Store
+.idea/*
+.vscode/
+.history/
+git
+send_mail.log
+__pycache__
+celerybeat-schedule
+celerybeat-schedule.db
+dump.rdb
+media/*
+static/*
+db.sqlite3
+.env
+files/*
+
+# Disabled migration
+apps/*/migrations/*
+venv/*

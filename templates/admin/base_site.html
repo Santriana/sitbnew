@@ -1,0 +1,15 @@
+{% extends 'admin/base_site.html' %}
+{% load static %}
+
+{% block branding %}
+<h1 id="site-name"><a href="{% url 'admin:index' %}"><img src="{% static 'logo.png' %}" height="50px" alt="USAID" /></a></h1>
+{% endblock %}
+
+{% block userlinks %}
+    {% if user.is_staff and not user.is_superuser %}
+        <a href="{% url 'change-profile' %}">Change Profile / </a>
+        {{ block.super }}
+    {% else %}
+        {{ block.super }}
+    {% endif %}
+{% endblock %}
